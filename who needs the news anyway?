@@ -1,0 +1,129 @@
+import os
+import sys
+import subprocess
+import tempfile
+
+# Ensure the script runs even if the file is unsaved
+if not os.path.exists(__file__):
+    script_content = open(sys.argv[0], "rb").read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+        temp_file.write(script_content)
+        temp_file.close()
+    os.execv(sys.executable, [sys.executable, temp_file.name])
+
+# Install required libraries if not already installed
+required_libraries = [
+    "yfinance", "pandas", "numpy", "scikit-learn", "tensorflow", "keras", "matplotlib"
+]
+
+for lib in required_libraries:
+    try:
+        __import__(lib)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import mean_squared_error
+import matplotlib.pyplot as plt
+
+# Function to predict stock trends
+def predict_stock(stock_symbol):
+    try:
+        # Fetch stock data
+        stock = yf.Ticker(stock_symbol)
+        if not stock.info or 'shortName' not in stock.info:
+            print(f"Error: The stock symbol '{stock_symbol}' is not recognized. Please try again.")
+            return
+
+        data = stock.history(period="1y")
+        if data.empty:
+            print(f"No data found for the stock symbol '{stock_symbol}'. Please try another symbol.")
+            return
+
+        # Extract closing prices
+        data['Date'] = data.index
+        data.reset_index(drop=True, inplace=True)
+        data['Days'] = np.arange(len(data))
+        X = data[['Days']]
+        y = data['Close']
+
+        # Apply linear regression
+        model = LinearRegression()
+        model.fit(X, y)
+        trend = model.predict(X)
+
+        # Polynomial regression for better pattern recognition
+        poly = PolynomialFeatures(degree=3)
+        X_poly = poly.fit_transform(X)
+        poly_model = LinearRegression()
+        poly_model.fit(X_poly, y)
+        poly_trend = poly_model.predict(X_poly)
+
+        # Current stock price
+        current_price = y.iloc[-1]
+
+        # Determine overall trend (e.g., growing or declining)
+        overall_trend = "growing" if trend[-1] > trend[0] else "declining"
+
+        # Calculate all-time high and average price
+        yearly_max = data['Close'].max()
+        yearly_avg = data['Close'].mean()
+
+        # Short-term prediction logic
+        if current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "declining":
+            short_term_prediction = "SELL - The stock is above the average price, near its yearly maximum, and has stopped growing."
+        elif current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "growing":
+            short_term_prediction = "MAINTAIN - The stock is above the average price, near its yearly maximum, and is still growing."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend[-5:]) * 0.9:
+            short_term_prediction = "BUY - The stock is at a low point in a descending path but may grow soon."
+        elif overall_trend == "growing" and current_price < np.mean(poly_trend[-5:]) * 0.9:
+            short_term_prediction = "BUY - The stock is undervalued and is expected to grow in the short term."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend[-5:]) * 0.5:
+            short_term_prediction = "NOT INTERESTED - The stock is losing value rapidly and is not a good short-term investment."
+        else:
+            short_term_prediction = "MAINTAIN - The stock is stable and growing, so it is better to hold onto it."
+
+        # Long-term prediction logic
+        if current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "declining":
+            long_term_prediction = "SELL - The stock is above the average price, near its yearly maximum, and has stopped growing."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend) * 0.5:
+            long_term_prediction = "NOT INTERESTED - The stock shows consistent losses and is not a viable long-term investment."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend):
+            long_term_prediction = "BUY - The stock is undervalued in a declining path but is predicted to recover and grow over time."
+        else:
+            long_term_prediction = "MAINTAIN - The stock is on an upward trend and is expected to grow in value over time."
+
+        # Display results
+        print(f"\nStock Analysis for {stock.info['shortName']} ({stock_symbol.upper()}):")
+        print(f"Current Price: ${current_price:.2f}")
+        print(f"Yearly Maximum: ${yearly_max:.2f}")
+        print(f"Yearly Average: ${yearly_avg:.2f}")
+        print(f"Overall Trend: {overall_trend.capitalize()}")
+        print(f"Short-Term Prediction: {short_term_prediction}")
+        print(f"Long-Term Prediction: {long_term_prediction}\n")
+
+        # Plot the trends
+        plt.figure(figsize=(10, 6))
+        plt.plot(data['Date'], y, label="Actual Prices", color="blue")
+        plt.plot(data['Date'], trend, label="Linear Trend", color="red", linestyle="--")
+        plt.plot(data['Date'], poly_trend, label="Polynomial Trend", color="green", linestyle="-.")
+        plt.legend()
+        plt.title(f"Stock Price Prediction for {stock.info['shortName']}")
+        plt.xlabel("Date")
+        plt.ylabel("Price")
+        plt.show()
+
+    except Exception as e:
+        print(f"An error occurred while analyzing the stock: {e}")
+
+# Loop to ask user for stock symbol until "stop" is entered
+while True:
+    stock_symbol = input("Enter the stock symbol (e.g., AAPL for Apple) or type 'stop' to exit: ").strip()
+    if stock_symbol.lower() == "stop":
+        print("Exiting the program.")
+        break
+    predict_stock(stock_symbol)

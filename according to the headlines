@@ -1,0 +1,225 @@
+import os
+import sys
+import subprocess
+import tempfile
+import requests
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+import matplotlib.pyplot as plt
+from textblob import TextBlob
+from xml.etree import ElementTree as ET
+
+# Ensure the script runs even if the file is unsaved
+if not os.path.exists(__file__):
+    script_content = open(sys.argv[0], "rb").read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as temp_file:
+        temp_file.write(script_content)
+        temp_file.close()
+    os.execv(sys.executable, [sys.executable, temp_file.name])
+
+# Install required libraries if not already installed
+required_libraries = [
+    "yfinance", "pandas", "numpy", "scikit-learn", "tensorflow", "keras", "matplotlib", "requests", "textblob"
+]
+
+for lib in required_libraries:
+    try:
+        __import__(lib)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
+
+# Function to fetch news articles about the stock using Google News RSS feed
+def fetch_stock_news(stock_symbol):
+    try:
+        url = f"https://news.google.com/rss/search?q={stock_symbol}+stock"
+        print(f"Fetching news for {stock_symbol} from: {url}")
+        response = requests.get(url)
+        response.raise_for_status()
+
+        # Parse the RSS feed
+        root = ET.fromstring(response.content)
+        articles = []
+        for item in root.findall(".//item"):
+            title = item.find("title").text
+            link = item.find("link").text
+            pub_date = item.find("pubDate").text
+            articles.append({"title": title, "url": link, "publishedAt": pub_date})
+
+        if not articles:
+            print(f"No recent news found for the stock symbol '{stock_symbol}'.")
+            return []
+
+        print(f"Fetched {len(articles)} articles for {stock_symbol}.")
+        return articles  # Return all articles
+
+    except Exception as e:
+        print(f"An error occurred while fetching news: {e}")
+        return []
+
+# Function to analyze sentiment of news articles
+def analyze_news_sentiment(articles):
+    try:
+        if not articles:
+            return {"final_sentiment": "neutral", "positive_count": 0, "negative_count": 0, "ratio": "N/A"}
+
+        sentiment_scores = [TextBlob(article['title']).sentiment.polarity for article in articles]
+        positive_count = sum(1 for score in sentiment_scores if score > 0.1)
+        negative_count = sum(1 for score in sentiment_scores if score < -0.1)
+        neutral_count = len(sentiment_scores) - positive_count - negative_count
+
+        avg_sentiment = np.mean(sentiment_scores)
+        final_sentiment = (
+            "positive" if avg_sentiment > 0.1 else
+            "negative" if avg_sentiment < -0.1 else
+            "neutral"
+        )
+        ratio = f"{positive_count}:{negative_count}"
+
+        return {
+            "final_sentiment": final_sentiment,
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "ratio": ratio
+        }
+    except Exception as e:
+        print(f"An error occurred during sentiment analysis: {e}")
+        return {"final_sentiment": "neutral", "positive_count": 0, "negative_count": 0, "ratio": "N/A"}
+
+# Function to predict stock trends
+def predict_stock(stock_symbol):
+    try:
+        # Fetch stock data
+        stock = yf.Ticker(stock_symbol)
+        if not stock.info or 'shortName' not in stock.info:
+            print(f"Error: The stock symbol '{stock_symbol}' is not recognized.")
+            return
+
+        data = stock.history(period="1y")
+        if data.empty:
+            print(f"No data found for the stock symbol '{stock_symbol}'.")
+            return
+
+        # Prepare data for analysis
+        data['Date'] = data.index
+        data.reset_index(drop=True, inplace=True)
+        data['Days'] = np.arange(len(data))
+        X = data[['Days']]
+        y = data['Close']
+
+        # Apply linear regression
+        model = LinearRegression()
+        model.fit(X, y)
+        trend = model.predict(X)
+
+        # Apply polynomial regression
+        poly = PolynomialFeatures(degree=3)
+        X_poly = poly.fit_transform(X)
+        poly_model = LinearRegression()
+        poly_model.fit(X_poly, y)
+        poly_trend = poly_model.predict(X_poly)
+
+        # Analyze stock trends
+        current_price = y.iloc[-1]
+        overall_trend = "growing" if trend[-1] > trend[0] else "declining"
+        yearly_max = data['Close'].max()
+        yearly_avg = data['Close'].mean()
+
+        # Short-term prediction
+        if current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "declining":
+            short_term_prediction = "SELL - The stock is above the average price, near its yearly maximum, and has stopped growing."
+        elif current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "growing":
+            short_term_prediction = "MAINTAIN - The stock is above the average price, near its yearly maximum, and is still growing."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend[-5:]) * 0.9:
+            short_term_prediction = "BUY - The stock is at a low point in a descending path but may grow soon."
+        elif overall_trend == "growing" and current_price < np.mean(poly_trend[-5:]) * 0.9:
+            short_term_prediction = "BUY - The stock is undervalued and is expected to grow in the short term."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend[-5:]) * 0.5:
+            short_term_prediction = "NOT INTERESTED - The stock is losing value rapidly and is not a good short-term investment."
+        else:
+            short_term_prediction = "MAINTAIN - The stock is stable and growing, so it is better to hold onto it."
+
+        # Long-term prediction
+        if current_price > yearly_avg and current_price >= yearly_max * 0.95 and overall_trend == "declining":
+            long_term_prediction = "SELL - The stock is above the average price, near its yearly maximum, and has stopped growing."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend) * 0.5:
+            long_term_prediction = "NOT INTERESTED - The stock shows consistent losses and is not a viable long-term investment."
+        elif overall_trend == "declining" and current_price < np.mean(poly_trend):
+            long_term_prediction = "BUY - The stock is undervalued in a declining path but is predicted to recover and grow over time."
+        else:
+            long_term_prediction = "MAINTAIN - The stock is on an upward trend and is expected to grow in value over time."
+
+        # Fetch and analyze news
+        news_articles = fetch_stock_news(stock_symbol)
+        news_analysis = analyze_news_sentiment(news_articles)
+        news_sentiment = news_analysis["final_sentiment"]
+        positive_count = news_analysis["positive_count"]
+        negative_count = news_analysis["negative_count"]
+        ratio = news_analysis["ratio"]
+
+        # Final suggestion
+        if not news_articles:
+            final_suggestion = "NO DATA - No news articles were found for this stock."
+        elif overall_trend == "growing" and short_term_prediction.startswith("BUY") and news_sentiment == "positive":
+            final_suggestion = "BUY - The stock is growing, undervalued, and news sentiment is positive."
+        elif overall_trend == "declining" and short_term_prediction.startswith("SELL") and news_sentiment == "negative":
+            final_suggestion = "SELL - The stock is declining, overvalued, and news sentiment is negative."
+        elif news_sentiment == "positive" and overall_trend == "growing":
+            final_suggestion = "BUY - The stock is growing, and news sentiment is positive."
+        elif news_sentiment == "negative" and overall_trend == "declining":
+            final_suggestion = "SELL - The stock is declining, and news sentiment is negative."
+        else:
+            final_suggestion = "HOLD - The stock is stable, and news sentiment does not indicate significant changes."
+
+        # Display results
+        print(f"\nStock Analysis for {stock.info['shortName']} ({stock_symbol.upper()}):")
+        print(f"Current Price: ${current_price:.2f}")
+        print(f"Yearly Maximum: ${yearly_max:.2f}")
+        print(f"Yearly Average: ${yearly_avg:.2f}")
+        print(f"Overall Trend: {overall_trend.capitalize()}")
+        print(f"Short-Term Prediction: {short_term_prediction}")
+        print(f"Long-Term Prediction: {long_term_prediction}")
+        print(f"News Sentiment: {news_sentiment.capitalize()} (Positive: {positive_count}, Negative: {negative_count}, Ratio: {ratio})")
+        print(f"Final Suggestion: {final_suggestion}")
+        print("\nReasons for Final Suggestion:")
+        if news_articles:
+            for idx, article in enumerate(news_articles, start=1):
+                print(f"{idx}. {article['title']}")
+                print(f"   URL: {article['url']}")
+                print(f"   Published At: {article['publishedAt']}\n")
+        else:
+            print("- No news articles were found for this stock.")
+        print()
+
+        # Justification for prediction
+        print("Justification for Prediction:")
+        if news_sentiment == "positive":
+            print("The majority of news articles indicate positive sentiment, suggesting optimism about the stock's performance.")
+        elif news_sentiment == "negative":
+            print("The majority of news articles indicate negative sentiment, suggesting concerns about the stock's performance.")
+        else:
+            print("The news sentiment is neutral, indicating no strong bias in recent news articles.")
+
+        # Plot the trends
+        plt.figure(figsize=(10, 6))
+        plt.plot(data['Date'], y, label="Actual Prices", color="blue")
+        plt.plot(data['Date'], trend, label="Linear Trend", color="red", linestyle="--")
+        plt.plot(data['Date'], poly_trend, label="Polynomial Trend", color="green", linestyle="-.")
+        plt.legend()
+        plt.title(f"Stock Price Prediction for {stock.info['shortName']}")
+        plt.xlabel("Date")
+        plt.ylabel("Price")
+        plt.show()
+
+    except Exception as e:
+        print(f"An error occurred while analyzing the stock: {e}")
+
+# Main loop to ask user for stock symbol
+while True:
+    stock_symbol = input("Enter the stock symbol (e.g., AAPL for Apple) or type 'stop' to exit: ").strip()
+    if stock_symbol.lower() == "stop":
+        print("Exiting the program.")
+        break
+    predict_stock(stock_symbol)
